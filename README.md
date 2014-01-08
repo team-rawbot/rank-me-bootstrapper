@@ -16,3 +16,15 @@ the `SECRET_KEY` variable).
 Finally, run the following command:
 
     ansible-playbook -i hosts.ini playbook.yml
+
+You should then be able to access the rankme instance on the URL you provided
+in the `hosts.ini` file (variable `server_name`).
+
+Creating a superuser
+--------------------
+
+This install process doesn't create a superuser, so if you want one you'll have
+to create one by yourself. To do so, just SSH to your server and run (replace
+`/var/www/rankme` by your own `install_path`):
+
+    /var/www/rankme/ENV/bin/python /var/www/rankme/rankme/manage.py createsuperuser
