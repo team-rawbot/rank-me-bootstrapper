@@ -1,0 +1,172 @@
+---
+- hosts: dbserver
+  remote_user: "{{ remote_user }}"
+  tasks:
+      - name: ensure python-apt is installed
+        shell: apt-get update && apt-get install -y python-apt
+      - name: ensure postgresql is installed
+        apt: pkg=postgresql state=present
+      - name: ensure pythong-psycopg2 is present
+        apt: pkg=python-psycopg2 state=present
+      - name: ensure database exists
+        postgresql_db: "name={{ db_name }}"
+        sudo: yes
+        sudo_user: postgres
+      - name: ensure user exists
+        postgresql_user: "db={{ db_name }} name={{ db_user }} password={{ db_password }}"
+        sudo: yes
+        sudo_user: postgres
+
+- hosts: webserver
+  vars:
+      DATABASE_URL: "postgres://{{ db_user }}:{{ db_password }}@{{ db_host }}/{{ db_name }}"
+      STATIC_URL: "http://{{ static_server_name }}/"
+      STATIC_ROOT: "{{ install_path }}/static"
+      DJANGO_SETTINGS_MODULE: rankme.settings.base
+  remote_user: "{{ remote_user }}"
+  tasks:
+      - name: ensure python-apt is installed
+        shell: apt-get update && apt-get install -y python-apt
+      # Create install path
+      - name: "ensure {{ install_path }} is present"
+        file: "path={{ install_path }} state=directory"
+      # Create user and group
+      - name: "ensure group {{ app_group }} exists"
+        group: "name={{ app_group }} state=present"
+      - name: "ensure user {{ app_user }} exists"
+        user: "name={{ app_user }} group={{ app_group }} home={{ install_path }} state=present"
+      - name: "update owner of {{ install_path }}"
+        file: "path={{ install_path }} owner={{ app_user }} group={{ app_group }} state=directory"
+      # We don't install virtualenv from the Debian package since it doesn't
+      # include setuptools
+      - name: ensure virtualenv is not installed
+        apt: pkg=python-virtualenv state=absent
+      - name: ensure pip is installed
+        apt: pkg=python-pip state=present
+      - name: ensure virtualenv is installed with pip
+        command: pip install virtualenv
+
+      # Install base packages
+      - name: ensure nginx is installed
+        apt: pkg=nginx state=present
+      - name: ensure supervisor is installed
+        apt: pkg=supervisor state=present
+      - name: ensure python-dev is installed
+        apt: pkg=python-dev state=present
+      - name: ensure libpq-dev is installed
+        apt: pkg=libpq-dev state=present
+      - name: ensure python-pycurl is installed
+        apt: pkg=python-pycurl state=present
+
+      # Install nodejs
+      - name: ensure wheezy-backports repository is available (for nodejs)
+        apt_repository: repo="deb http://ftp.debian.org/debian wheezy-backports main" state=present
+      - name: ensure nodejs is at the latest version
+        apt: update_cache=yes pkg=nodejs state=latest
+      - name: ensure nodejs-legacy is at the latest version
+        apt: pkg=nodejs-legacy state=latest
+
+      # Install npm
+      - name: ensure npm is installed
+        shell: curl https://npmjs.org/install.sh | sh
+
+      # Nginx configuration
+      - name: copy the nginx vhost file
+        template: src=config/nginx.j2 dest=/etc/nginx/sites-available/rankme
+      - name: enable the nginx vhost file
+        file: src=/etc/nginx/sites-available/rankme dest=/etc/nginx/sites-enabled/rankme state=link
+
+      # Supervisor configuration
+      - name: copy supervisor config file for gunicorn
+        template: src=config/supervisor.j2 dest=/etc/supervisor/conf.d/rankme.conf
+
+      # Rankme installation
+      - name: clone git repo
+        git: "repo=https://github.com/team-rawbot/rank-me dest={{ install_path }}/rankme"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+
+      - name: harden project directory permissions
+        file: "path={{ install_path }}/rankme mode=0750 state=directory"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+
+      - name: create venv
+        pip: "requirements={{ install_path }}/rankme/requirements/base.txt virtualenv={{ install_path }}/ENV"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+
+      - name: install psycopg2
+        pip: "name=psycopg2 virtualenv={{ install_path }}/ENV"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+
+      - name: install gunicorn
+        pip: "name=gunicorn virtualenv={{ install_path }}/ENV"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+
+      - name: ensure static files directory is present
+        file: "path={{ STATIC_ROOT }} state=directory"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+
+      - name: ensure logs directory is present
+        file: "path={{ install_path }}/logs state=directory mode=0750"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+
+      - name: ensure environment variables are set to appropriate values
+        copy: "dest={{ install_path }}/rankme/envdir/{{ item.key }} content={{ item.value }}"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+        with_items:
+            - { key: STATIC_ROOT, value: "{{ STATIC_ROOT }}" }
+            - { key: STATIC_URL, value: "{{ STATIC_URL }}" }
+            - { key: DATABASE_URL, value: "{{ DATABASE_URL }}" }
+            - { key: SECRET_KEY, value: "{{ SECRET_KEY }}" }
+            - { key: DJANGO_SETTINGS_MODULE, value: "{{ DJANGO_SETTINGS_MODULE }}" }
+            - { key: ALLOWED_HOSTS, value: "{{ server_name }}" }
+
+      - name: install npm packages
+        npm: "name={{ item }} state=present global=yes production=yes"
+        with_items:
+            - grunt
+            - grunt-cli
+            - bower
+
+      - name: install local npm packages
+        command: "npm install chdir={{ install_path }}/rankme"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+
+      - name: install local bower packages
+        command: "bower install chdir={{ install_path }}/rankme"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+
+      - name: compile less
+        command: "grunt less chdir={{ install_path }}/rankme"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+
+      - name: sync the database
+        command: "{{ install_path }}/ENV/bin/python {{ install_path }}/rankme/manage.py syncdb --all --noinput"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+
+      - name: fake the migrations
+        command: "{{ install_path }}/ENV/bin/python {{ install_path }}/rankme/manage.py migrate --fake"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+
+      - name: collect static files
+        command: "{{ install_path }}/ENV/bin/python {{ install_path }}/rankme/manage.py collectstatic --noinput"
+        sudo: yes
+        sudo_user: "{{ app_user }}"
+
+      - name: restart services
+        service: "name={{ item }} state=restarted"
+        with_items:
+            - nginx
+            - supervisor

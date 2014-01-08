@@ -1,0 +1,7 @@
+[program:rankme]
+user={{ app_user }}
+command={{ install_path }}/ENV/bin/gunicorn --error-logfile {{ install_path }}/logs/error.log --log-level warning rankme.wsgi:application
+directory={{ install_path }}/rankme/
+autostart=true
+autorestart=true
+redirect_stderr=true
