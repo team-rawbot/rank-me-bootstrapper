@@ -14,4 +14,8 @@ server {
     server_name {{ static_server_name }};
 
     root {{ install_path }}/static;
+    
+    location ~* "^.*?\.(eot)|(ttf)|(woff)|(svg)$" {
+        add_header Access-Control-Allow-Origin *;
+    }
 }
